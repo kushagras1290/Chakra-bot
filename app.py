@@ -22,6 +22,7 @@ app = Flask(__name__)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 PORT = int(os.getenv("PORT", 5000))
+CHAKRA_API_TOKEN = os.getenv("CHAKRA_API_TOKEN")  # ChakraHQ API token for lead creation
 
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY environment variable is required")
@@ -584,6 +585,74 @@ def log_lead(phone, data):
         logger.info(f"Lead logged for {phone}")
     except Exception as e:
         logger.error(f"Failed to log lead: {e}")
+    
+    # Send to ChakraHQ
+    send_lead_to_chakra(phone, data)
+
+
+def send_lead_to_chakra(phone, lead_data):
+    """Send qualified lead to ChakraHQ Lead API"""
+    if not CHAKRA_API_TOKEN:
+        logger.warning("CHAKRA_API_TOKEN not set, skipping ChakraHQ lead submission")
+        return False
+    
+    try:
+        # Map our lead data to ChakraHQ format
+        # Customize these field mappings based on your ChakraHQ Lead Attributes
+        chakra_payload = {
+            "data": {
+                "phone_number": lead_data.get("Customer Phone", phone),
+                "name": lead_data.get("Customer Name", ""),
+                "email": lead_data.get("Customer Email", ""),
+                "gemstone": lead_data.get("Gemstone", ""),
+                "carat_weight": lead_data.get("Carat Weight", lead_data.get("Gemstone and Carat Weight Range Combinations", "")),
+                "budget": lead_data.get("Budget", ""),
+                "country": lead_data.get("Country", lead_data.get("User Phone Country", "")),
+                "qualification_status": lead_data.get("Qualification Decision", ""),
+                "ticket_id": lead_data.get("Unique Ticket ID", ""),
+                "probability": lead_data.get("Probability of Conversion", ""),
+                "disqualification_reason": lead_data.get("Reason for Disqualification", ""),
+                "source": "WhatsApp Bot",
+            }
+        }
+        
+        # Add status based on qualification
+        qual_decision = lead_data.get("Qualification Decision", "")
+        if "Qualified" in qual_decision:
+            chakra_payload["status"] = "OPEN"
+            chakra_payload["state"] = "NEW"
+        elif "Disqualified" in qual_decision:
+            chakra_payload["status"] = "CANCELLED"
+            chakra_payload["state"] = "DISQUALIFIED"
+        elif "Budget Escalation" in qual_decision:
+            chakra_payload["status"] = "OPEN"
+            chakra_payload["state"] = "BUDGET_ESCALATION"
+        
+        # Remove empty values
+        chakra_payload["data"] = {k: v for k, v in chakra_payload["data"].items() if v}
+        
+        response = requests.post(
+            "https://api.chakrahq.com/v1/ext/procedure/lead/process",
+            headers={
+                "Authorization": f"Bearer {CHAKRA_API_TOKEN}",
+                "Content-Type": "application/json"
+            },
+            json=chakra_payload,
+            timeout=15
+        )
+        
+        if response.status_code in [200, 201]:
+            resp_data = response.json()
+            chakra_lead_id = resp_data.get("_data", {}).get("data", {}).get("lead_id", "unknown")
+            logger.info(f"Lead sent to ChakraHQ successfully. Lead ID: {chakra_lead_id}")
+            return True
+        else:
+            logger.error(f"ChakraHQ API error: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Failed to send lead to ChakraHQ: {e}\n{traceback.format_exc()}")
+        return False
 
 
 def extract_urls_and_skus(text: str):
@@ -865,9 +934,10 @@ When generating qualification JSON, the system will auto-fill Customer Phone.
 
 # === Main Processing Function ===
 
-def process_message(phone: str, text: str, context: list = None) -> str:
+def process_message(phone: str, text: str, context: list = None, contact_name: str = "") -> str:
     """
     Process incoming message. Context is optional - ChakraHQ manages conversation history.
+    contact_name: Optional WhatsApp profile name from ChakraHQ
     """
     if context is None:
         context = []
@@ -895,6 +965,11 @@ def process_message(phone: str, text: str, context: list = None) -> str:
     
     country_info = user_country_codes[phone]
     
+    # Store WhatsApp profile name if available
+    if contact_name and contact_name.strip():
+        country_info["whatsapp_name"] = contact_name.strip()
+        logger.info(f"WhatsApp profile name: {contact_name}")
+    
     # Check for URLs
     urls, skus = extract_urls_and_skus(text)
     scraped_data = None
@@ -911,6 +986,8 @@ def process_message(phone: str, text: str, context: list = None) -> str:
     enhanced_text = text
     if len(context) == 0:
         enhanced_text = f"{text}\n\n[Customer: {country_info['country']}, Currency: {country_info['currency_code']}]"
+        if contact_name:
+            enhanced_text += f"\n[WhatsApp Profile Name: {contact_name}]"
     
     # Call OpenAI
     result = call_openai(enhanced_text, context, scraped_data, phone)
@@ -927,6 +1004,9 @@ def process_message(phone: str, text: str, context: list = None) -> str:
                 lead_data["User Phone Country"] = country_info.get('country', 'Unknown')
             if "User Currency" not in lead_data:
                 lead_data["User Currency"] = country_info.get('currency_code', 'USD')
+            # Add WhatsApp profile name if we have it and customer name is missing
+            if contact_name and not lead_data.get("Customer Name"):
+                lead_data["Customer Name"] = contact_name
             
             log_lead(phone, lead_data)
             
@@ -949,26 +1029,35 @@ def chat_endpoint():
         data = request.get_json()
         
         if not data:
-            return jsonify({"error": "No JSON data received"}), 400
+            return jsonify({"data": {"value": "No JSON data received"}}), 400
         
-        text = data.get("text", "").strip()
-        phone = data.get("phone", "unknown").strip()
+        # Support both formats: direct fields or nested in 'text'/'query'
+        text = data.get("text") or data.get("query") or data.get("Chatmessage text", "")
+        text = str(text).strip()
+        
+        phone = data.get("phone") or data.get("Contact Phone Number", "unknown")
+        phone = str(phone).strip()
+        
+        # Optional: Get customer name from WhatsApp profile
+        contact_name = data.get("Contact Name") or data.get("Contact First Name", "")
+        
         context = data.get("context", [])  # Optional: ChakraHQ can pass conversation history
         
         if not text:
-            return jsonify({"error": "No text provided"}), 400
+            return jsonify({"data": {"value": "No message provided"}}), 400
         
         logger.info(f"Received from {phone}: {text[:80]}...")
         
-        reply = process_message(phone, text, context)
+        reply = process_message(phone, text, context, contact_name)
         
         logger.info(f"Reply to {phone}: {reply[:80]}...")
         
-        return jsonify({"reply": reply})
+        # Response format matching ChakraHQ expected: response.data.value
+        return jsonify({"data": {"value": reply}})
     
     except Exception as e:
         logger.error(f"chat_endpoint() error: {e}\n{traceback.format_exc()}")
-        return jsonify({"error": "Internal server error", "reply": "Sorry, something went wrong. Please try again."}), 500
+        return jsonify({"data": {"value": "Sorry, something went wrong. Please try again."}}), 500
 
 
 @app.route("/health", methods=["GET"])
@@ -983,9 +1072,20 @@ def home():
         "status": "running",
         "model": OPENAI_MODEL,
         "endpoints": {
-            "/chat": "POST - Main chat endpoint (expects: text, phone)",
+            "/chat": "POST - Main chat endpoint",
             "/health": "GET - Health check"
-        }
+        },
+        "request_format": {
+            "text": "or 'query' - User message (required)",
+            "phone": "or 'Contact Phone Number' - Customer phone (required)",
+            "Contact Name": "WhatsApp profile name (optional)"
+        },
+        "response_format": {
+            "data": {
+                "value": "Bot reply message"
+            }
+        },
+        "chakrahq_json_path": "response.data.value"
     }), 200
 
 
@@ -993,3 +1093,5 @@ if __name__ == "__main__":
     logger.info("Starting GemPundit ChakraHQ Bot...")
     logger.info(f"OpenAI Model: {OPENAI_MODEL}")
     app.run(host="0.0.0.0", port=PORT, debug=False)
+
+
