@@ -597,22 +597,29 @@ def send_lead_to_chakra(phone, lead_data):
         return False
     
     try:
-        # Map our lead data to ChakraHQ format
-        # Customize these field mappings based on your ChakraHQ Lead Attributes
+        # Send the lead_data directly as GPT generates it
+        # ChakraHQ will map these fields to their Lead Attributes
         chakra_payload = {
             "data": {
-                "phone_number": lead_data.get("Customer Phone", phone),
-                "name": lead_data.get("Customer Name", ""),
-                "email": lead_data.get("Customer Email", ""),
-                "gemstone": lead_data.get("Gemstone", ""),
-                "carat_weight": lead_data.get("Carat Weight", lead_data.get("Gemstone and Carat Weight Range Combinations", "")),
-                "budget": lead_data.get("Budget", ""),
-                "country": lead_data.get("Country", lead_data.get("User Phone Country", "")),
-                "qualification_status": lead_data.get("Qualification Decision", ""),
-                "ticket_id": lead_data.get("Unique Ticket ID", ""),
-                "probability": lead_data.get("Probability of Conversion", ""),
-                "disqualification_reason": lead_data.get("Reason for Disqualification", ""),
-                "source": "WhatsApp Bot",
+                "Unique Ticket ID": lead_data.get("Unique Ticket ID", ""),
+                "Qualification Decision": lead_data.get("Qualification Decision", ""),
+                "Customer Phone": lead_data.get("Customer Phone", phone),
+                "Customer Name": lead_data.get("Customer Name", ""),
+                "Customer Email": lead_data.get("Customer Email", ""),
+                "User Phone Country": lead_data.get("User Phone Country", ""),
+                "User Currency": lead_data.get("User Currency", ""),
+                "User Timezone": lead_data.get("User Timezone", ""),
+                "Customer Local Time": lead_data.get("Customer Local Time", ""),
+                "Gemstone": lead_data.get("Gemstone", lead_data.get("Gemstone and Carat Weight Range Combinations", "")),
+                "Carat Weight": lead_data.get("Carat Weight", ""),
+                "Budget": lead_data.get("Budget", ""),
+                "Estimated INR Per Carat": lead_data.get("Estimated INR Per Carat", ""),
+                "Country": lead_data.get("Country", ""),
+                "Probability of Conversion": lead_data.get("Probability of Conversion", ""),
+                "Reason for Disqualification": lead_data.get("Reason for Disqualification", ""),
+                "Manual Review Decision": lead_data.get("Manual Review Decision", ""),
+                "Probability of Email being Invalid": lead_data.get("Probability of Email being Invalid or Misleading", ""),
+                "Source": "WhatsApp Bot",
             }
         }
         
@@ -1093,5 +1100,3 @@ if __name__ == "__main__":
     logger.info("Starting GemPundit ChakraHQ Bot...")
     logger.info(f"OpenAI Model: {OPENAI_MODEL}")
     app.run(host="0.0.0.0", port=PORT, debug=False)
-
-
