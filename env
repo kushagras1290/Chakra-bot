@@ -1,0 +1,3 @@
+OPENAI_API_KEY=sk-your-actual-key-here
+OPENAI_MODEL=gpt-4o-mini  # defaults to gpt-4o-mini
+PORT=3099                  # defaults to 3099
