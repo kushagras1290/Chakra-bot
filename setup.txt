@@ -1,0 +1,30 @@
+SETUP
+=====
+
+1. Install:
+   pip install -r requirements.txt
+
+2. Configure:
+   cp .env.example .env
+   # Edit .env and add your OPENAI_API_KEY
+
+3. Run:
+   python gempundit_chakra_final.py
+
+FEATURES
+========
+
+Message Batching (10 sec):
+- Combines rapid messages
+- Returns empty while batching
+
+Ping System (3/8/15 min):
+- Auto follow-ups
+- POST /generate_ping
+
+ENDPOINTS
+=========
+
+POST /chatbotmessage
+POST /generate_ping
+GET /health
